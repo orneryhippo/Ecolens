@@ -1,0 +1,5 @@
+{
+  "name": "EcoLens: Plant & Animal Identifier",
+  "description": "Upload a photo to identify the plants and animals within it. Get detailed analysis including common names, scientific names, and descriptions powered by Gemini.",
+  "requestFramePermissions": []
+}
