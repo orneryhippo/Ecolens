@@ -126,7 +126,7 @@ const App: React.FC = () => {
         <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl overflow-hidden">
           <div className="p-6 md:p-10">
             <h1 className="text-3xl md:text-4xl font-bold text-center text-gray-900 dark:text-white">
-              EcoLens<span className="text-green-600">.</span>ai
+              EcoLens<span className="text-green-600">+</span>AI
             </h1>
             <p className="mt-2 text-center text-gray-500 dark:text-gray-400">
               Identify plants and animals from your photos with Gemini.
