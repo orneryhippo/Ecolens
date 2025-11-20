@@ -5,3 +5,8 @@ export interface IdentifiedItem {
   description: string;
   type: 'Plant' | 'Animal';
 }
+
+export interface GeneratedVariation {
+  description: string;
+  imageUrl: string;
+}

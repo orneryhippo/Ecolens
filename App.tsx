@@ -1,9 +1,9 @@
 
-import React, { useState, useCallback, DragEvent, ChangeEvent } from 'react';
-import { analyzeImage } from './services/geminiService';
-import { IdentifiedItem } from './types';
+import React, { useState, useCallback, DragEvent, ChangeEvent, MouseEvent, useRef } from 'react';
+import { analyzeImage, generateSimilarImage } from './services/geminiService';
+import { IdentifiedItem, GeneratedVariation } from './types';
 
-// --- Helper & UI Components (defined outside App to prevent re-creation on re-renders) ---
+// --- Helper & UI Components ---
 
 const UploadIcon: React.FC = () => (
   <svg className="w-12 h-12 mx-auto text-gray-400" stroke="currentColor" fill="none" viewBox="0 0 48 48" aria-hidden="true">
@@ -47,20 +47,55 @@ const AnalysisCard: React.FC<AnalysisCardProps> = ({ item }) => (
   </div>
 );
 
+interface GeneratedImageCardProps {
+  variation: GeneratedVariation;
+}
+
+const GeneratedImageCard: React.FC<GeneratedImageCardProps> = ({ variation }) => (
+  <div className="bg-indigo-50 dark:bg-indigo-900/20 p-4 rounded-lg shadow-sm w-full mb-4 border border-indigo-100 dark:border-indigo-800">
+    <h3 className="text-lg font-bold text-indigo-900 dark:text-indigo-100 mb-3 flex items-center">
+      <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor">
+        <path fillRule="evenodd" d="M4 3a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V5a2 2 0 00-2-2H4zm12 12H4l4-8 3 6 2-4 3 6z" clipRule="evenodd" />
+      </svg>
+      Generated Variation
+    </h3>
+    
+    <div className="mb-4 p-3 bg-white dark:bg-gray-800 rounded border border-indigo-100 dark:border-indigo-800 text-sm">
+        <p className="text-xs font-bold text-indigo-500 uppercase tracking-wider mb-1">Generation Prompt:</p>
+        <p className="text-gray-700 dark:text-gray-300 italic">"{variation.description}"</p>
+    </div>
+
+    <div className="rounded-lg overflow-hidden bg-gray-200 dark:bg-gray-700">
+      <img src={variation.imageUrl} alt="AI Generated Variation" className="w-full h-auto object-cover" />
+    </div>
+  </div>
+);
+
 
 // --- Main App Component ---
 const App: React.FC = () => {
   const [imageDataUrl, setImageDataUrl] = useState<string | null>(null);
   const [analysisResult, setAnalysisResult] = useState<IdentifiedItem[] | null>(null);
-  const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [generatedContent, setGeneratedContent] = useState<GeneratedVariation | null>(null);
+  
+  const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
+  const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  
   const [isDragging, setIsDragging] = useState<boolean>(false);
+  const [focusPoint, setFocusPoint] = useState<{x: number, y: number} | undefined>(undefined);
+  const imageRef = useRef<HTMLImageElement>(null);
+
+  const isLoading = isAnalyzing || isGenerating;
 
   const resetState = () => {
     setImageDataUrl(null);
     setAnalysisResult(null);
+    setGeneratedContent(null);
+    setFocusPoint(undefined);
     setError(null);
-    setIsLoading(false);
+    setIsAnalyzing(false);
+    setIsGenerating(false);
   };
   
   const handleFile = useCallback((file: File | null) => {
@@ -69,6 +104,8 @@ const App: React.FC = () => {
       reader.onloadend = () => {
         setImageDataUrl(reader.result as string);
         setAnalysisResult(null);
+        setGeneratedContent(null);
+        setFocusPoint(undefined);
         setError(null);
       };
       reader.readAsDataURL(file);
@@ -81,30 +118,54 @@ const App: React.FC = () => {
     handleFile(e.target.files?.[0] ?? null);
   }, [handleFile]);
 
+  const handleImageClick = (e: MouseEvent<HTMLImageElement>) => {
+    if (!imageRef.current) return;
+    const rect = imageRef.current.getBoundingClientRect();
+    const x = ((e.clientX - rect.left) / rect.width) * 100;
+    const y = ((e.clientY - rect.top) / rect.height) * 100;
+    setFocusPoint({ x, y });
+    // Clear previous specific analysis if the focus point changes
+    setAnalysisResult(null); 
+  };
+
+  const prepareImageData = () => {
+    if (!imageDataUrl) throw new Error("No image selected");
+    const [header, base64Data] = imageDataUrl.split(',');
+    if (!header || !base64Data) throw new Error("Invalid image data.");
+    const mimeType = header.match(/:(.*?);/)?.[1];
+    if (!mimeType) throw new Error("Could not determine mime type.");
+    return { base64Data, mimeType };
+  };
+
   const handleAnalyzeClick = useCallback(async () => {
-    if (!imageDataUrl) {
-      setError("Please select an image first.");
-      return;
-    }
-
-    setIsLoading(true);
+    if (!imageDataUrl) return;
+    setIsAnalyzing(true);
     setError(null);
-    setAnalysisResult(null);
-
+    
     try {
-      const [header, base64Data] = imageDataUrl.split(',');
-      if (!header || !base64Data) throw new Error("Invalid image data URL format.");
-      
-      const mimeType = header.match(/:(.*?);/)?.[1];
-      if (!mimeType) throw new Error("Could not determine image mime type.");
-
-      const result = await analyzeImage(base64Data, mimeType);
+      const { base64Data, mimeType } = prepareImageData();
+      const result = await analyzeImage(base64Data, mimeType, focusPoint);
       setAnalysisResult(result);
     } catch (e) {
-      const err = e as Error;
-      setError(err.message || "An unknown error occurred.");
+      setError((e as Error).message);
     } finally {
-      setIsLoading(false);
+      setIsAnalyzing(false);
+    }
+  }, [imageDataUrl, focusPoint]);
+
+  const handleGenerateClick = useCallback(async () => {
+    if (!imageDataUrl) return;
+    setIsGenerating(true);
+    setError(null);
+
+    try {
+      const { base64Data, mimeType } = prepareImageData();
+      const result = await generateSimilarImage(base64Data, mimeType);
+      setGeneratedContent(result);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setIsGenerating(false);
     }
   }, [imageDataUrl]);
 
@@ -122,14 +183,14 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen flex flex-col items-center justify-center p-4 bg-gray-100 dark:bg-gray-900 text-gray-800 dark:text-gray-200 transition-colors duration-300">
-      <main className="w-full max-w-4xl mx-auto">
+      <main className="w-full max-w-5xl mx-auto">
         <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl overflow-hidden">
-          <div className="p-6 md:p-10">
+          <div className="p-6 md:p-8">
             <h1 className="text-3xl md:text-4xl font-bold text-center text-gray-900 dark:text-white">
               EcoLens<span className="text-green-600">+</span>AI
             </h1>
             <p className="mt-2 text-center text-gray-500 dark:text-gray-400">
-              Identify plants and animals from your photos with Gemini.
+              Identify nature or generate variations with Gemini.
             </p>
           </div>
           
@@ -140,7 +201,7 @@ const App: React.FC = () => {
                 {!imageDataUrl ? (
                   <div
                     {...dragEventProps}
-                    className={`relative w-full h-64 border-2 border-dashed rounded-xl flex flex-col justify-center items-center text-center p-4 transition-colors ${
+                    className={`relative w-full h-80 border-2 border-dashed rounded-xl flex flex-col justify-center items-center text-center p-4 transition-colors ${
                       isDragging ? 'border-green-500 bg-green-50 dark:bg-green-900/20' : 'border-gray-300 dark:border-gray-600'
                     }`}
                   >
@@ -148,43 +209,81 @@ const App: React.FC = () => {
                     <p className="mt-2 text-sm font-semibold text-gray-600 dark:text-gray-300">
                       <span className="text-green-600">Click to upload</span> or drag and drop
                     </p>
-                    <p className="text-xs text-gray-500 dark:text-gray-400">PNG, JPG, WEBP, etc.</p>
+                    <p className="text-xs text-gray-500 dark:text-gray-400">PNG, JPG, WEBP</p>
                     <input type="file" accept="image/*" onChange={handleImageChange} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" />
                   </div>
                 ) : (
-                  <div className="w-full">
-                    <img src={imageDataUrl} alt="Upload preview" className="w-full rounded-xl shadow-lg object-contain max-h-96" />
+                  <div className="w-full flex flex-col items-center">
+                    <div className="relative inline-block w-full flex justify-center bg-gray-100 dark:bg-gray-900 rounded-xl overflow-hidden">
+                      <img 
+                        ref={imageRef}
+                        src={imageDataUrl} 
+                        onClick={handleImageClick}
+                        alt="Upload preview" 
+                        className="max-w-full max-h-96 object-contain cursor-crosshair" 
+                      />
+                      {focusPoint && (
+                        <div 
+                          className="absolute w-8 h-8 -ml-4 -mt-4 border-2 border-white bg-red-500/80 backdrop-blur-sm rounded-full flex items-center justify-center text-white text-sm font-bold pointer-events-none shadow-lg transform transition-all duration-200"
+                          style={{ left: `${focusPoint.x}%`, top: `${focusPoint.y}%` }}
+                        >
+                          X
+                        </div>
+                      )}
+                      {!focusPoint && (
+                        <div className="absolute bottom-2 bg-black/50 text-white text-xs px-2 py-1 rounded-full pointer-events-none backdrop-blur-sm">
+                          Click image to focus
+                        </div>
+                      )}
+                    </div>
+                    
                     <button
                       onClick={resetState}
-                      className="mt-4 w-full text-sm text-center text-gray-500 hover:text-red-500 dark:text-gray-400 dark:hover:text-red-400 transition"
+                      className="mt-2 text-sm text-gray-500 hover:text-red-500 dark:text-gray-400 dark:hover:text-red-400 transition"
                     >
                       Clear Image
                     </button>
                   </div>
                 )}
                 
-                <button
-                  onClick={handleAnalyzeClick}
-                  disabled={!imageDataUrl || isLoading}
-                  className="w-full bg-green-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-all duration-300 transform hover:scale-105 disabled:scale-100 flex items-center justify-center space-x-2 shadow-lg"
-                >
-                  {isLoading && (
-                    <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                    </svg>
-                  )}
-                  <span>{isLoading ? 'Analyzing...' : 'Analyze Image'}</span>
-                </button>
+                <div className="w-full grid grid-cols-2 gap-3">
+                  <button
+                    onClick={handleAnalyzeClick}
+                    disabled={!imageDataUrl || isLoading}
+                    className="bg-green-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-all duration-200 shadow-md flex items-center justify-center"
+                  >
+                    {isAnalyzing ? 'Analyzing...' : 'Analyze'}
+                  </button>
+                  <button
+                    onClick={handleGenerateClick}
+                    disabled={!imageDataUrl || isLoading}
+                    className="bg-indigo-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-indigo-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-all duration-200 shadow-md flex items-center justify-center"
+                  >
+                    {isGenerating ? 'Generating...' : 'Generate Similar'}
+                  </button>
+                </div>
+                {isLoading && <Spinner />}
               </div>
               
               {/* Right Column: Analysis Results */}
               <div className="w-full min-h-[20rem] flex flex-col">
-                <h2 className="text-xl font-semibold mb-4 text-gray-800 dark:text-white">Analysis</h2>
-                <div className="flex-grow bg-gray-100/50 dark:bg-gray-900/50 rounded-xl p-4 overflow-y-auto max-h-96">
-                  {isLoading && <Spinner />}
-                  {error && <p className="text-red-500 text-center">{error}</p>}
-                  {!isLoading && !error && analysisResult && (
+                <h2 className="text-xl font-semibold mb-4 text-gray-800 dark:text-white flex justify-between items-center">
+                  Results
+                  {(analysisResult || generatedContent) && (
+                    <span className="text-xs font-normal px-2 py-1 bg-gray-200 dark:bg-gray-700 rounded text-gray-600 dark:text-gray-300">
+                      Generated with Gemini
+                    </span>
+                  )}
+                </h2>
+                <div className="flex-grow bg-gray-100/50 dark:bg-gray-900/50 rounded-xl p-4 overflow-y-auto max-h-[32rem]">
+                  
+                  {error && <p className="text-red-500 text-center p-4">{error}</p>}
+                  
+                  {/* Generated Image Section */}
+                  {generatedContent && <GeneratedImageCard variation={generatedContent} />}
+
+                  {/* Analysis Results Section */}
+                  {analysisResult && (
                     analysisResult.length > 0 ? (
                       <div className="space-y-4">
                         {analysisResult.map((item, index) => (
@@ -192,11 +291,19 @@ const App: React.FC = () => {
                         ))}
                       </div>
                     ) : (
-                      <p className="text-center text-gray-500 dark:text-gray-400">No plants or animals were identified in the image.</p>
+                      !generatedContent && <p className="text-center text-gray-500 dark:text-gray-400">No plants or animals were identified.</p>
                     )
                   )}
-                  {!isLoading && !error && !analysisResult && (
-                    <p className="text-center text-gray-500 dark:text-gray-400">Results will appear here.</p>
+
+                  {!isLoading && !error && !analysisResult && !generatedContent && (
+                    <div className="flex flex-col items-center justify-center h-64 text-gray-400">
+                       <svg className="w-16 h-16 mb-4 opacity-20" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M4 3a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V5a2 2 0 00-2-2H4zm12 12H4l4-8 3 6 2-4 3 6z" clipRule="evenodd" /></svg>
+                       <p>Upload an image and choose an action.</p>
+                       <p className="text-sm mt-2 text-center max-w-xs">
+                         Click "Analyze" to identify wildlife.<br/>
+                         Click "Generate Similar" to create AI art.
+                       </p>
+                    </div>
                   )}
                 </div>
               </div>
